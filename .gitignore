@@ -1,0 +1,4 @@
+log.*.txt
+metadata.json
+config.json
+**/__pycache__
