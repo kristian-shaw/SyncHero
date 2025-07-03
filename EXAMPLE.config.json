@@ -1,0 +1,24 @@
+{
+	"settings": {
+		"rclone_path": "\\path\\to\\rclone.exe",
+		"rclone_config_path": "\\path\\to\\rclone.conf",
+		"7zip_path": "\\path\\to\\7z.exe",
+		"destination_dir": "\\path\\to\\your\\destination\\folder",
+		"log_dir": ".",
+		"max_concurrent_extracts": 16,
+		"max_concurrent_deletes": 16,
+		"metadata_flush_loop_seconds": 60,
+		"progress_output_loop_seconds": 60
+	},
+	"sources": {
+		"ExampleSource": {
+			"remote_name": "rclone-remote-name",
+			"remote_path": "\\remote\\path\\to\\sync"
+		}
+	},
+	"remote_configs": {
+		"rclone-remote-name": {
+			"max_concurrent_downloads": 10
+		}
+	}
+}
