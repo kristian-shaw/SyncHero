@@ -1,60 +1,35 @@
 from .helpers import *
-from .context import InitializationError, LHContext
+from .context import Contextual
 
-from multiprocessing import Manager
+from multiprocessing import Lock
 from concurrent.futures import ThreadPoolExecutor, wait
 from time import sleep, time
 
 import json
 
-class MetadataManager(LHContext):
+class MetadataManager(Contextual):
 	_metadata_file_path = None
 	_metadata = None
-	_metadata_file_lock = None
-	_enable_flush_metadata_process = None
 	_flush_metadata_proc_pool = None
 	_flush_metadata_proc_future = None
 	_metadata_flush_seconds = None
 
-	def __init__(self):
+	def __init__(self, source_names, metadata_file_path, metadata_flush_seconds):
+		self._metadata_file_lock = Lock()
+		self._enable_flush_metadata_process = False
+		self._metadata_file_path = metadata_file_path
+		with open(metadata_file_path, "r") as metadata_file:
+			self._metadata = json.load(metadata_file)
+		self._metadata_flush_seconds = metadata_flush_seconds
+		for source_name in source_names:
+			if source_name not in self._metadata:
+				self._metadata[source_name] = {
+					"files": {}
+				}
 		super().__init__()
 
-	def init(self, source_names, metadata_file_path, metadata_flush_seconds):
-		if not self.get_class_init_status():
-			__class__._metadata_file_path = metadata_file_path
-			with open(metadata_file_path, "r") as metadata_file:
-				__class__._metadata = json.load(metadata_file)
-			mp_manager = Manager()
-			__class__._metadata_file_lock = mp_manager.Lock()
-			__class__._enable_flush_metadata_process = False
-			__class__._flush_metadata_proc_pool = None
-			__class__._metadata_flush_seconds = metadata_flush_seconds
-			self.set_source_names(source_names)
-			for source_name in source_names:
-				if source_name not in __class__._metadata:
-					__class__._metadata[source_name] = {
-						"files": {}
-					}
-			self.set_class_init_status(True)
-		else:
-			raise InitializationError("MetadataManager class has already been initialized.")
-
-	# def __getstate__(self):
-	# 	self_dict = self.__dict__.copy()
-	# 	del_dict_keys(
-	# 		self_dict,
-	# 		[
-	# 			'_metadata_file_lock',
-	# 			'_flush_metadata_proc_pool',
-	# 			'_flush_metadata_proc_future'
-	# 		]
-	# 	)
-	# 	return self_dict
-
-	# def __setstate__(self, self_dict):
-	# 	self.__dict__ = self_dict
-
-	def get_initialized_metadata(self, file_hash=None, is_archive=False, download_failed=False, extract_failed=False, cancelled_flag=False):
+	@staticmethod
+	def get_initialized_metadata(file_hash=None, is_archive=False, download_failed=False, extract_failed=False, cancelled_flag=False):
 		return {
 			"file_hash": file_hash,
 			"is_archive": is_archive,
@@ -64,23 +39,20 @@ class MetadataManager(LHContext):
 		}
 	
 	def initialize_metadata_for_file(self):
-		self.raise_exception_if_not_initialized()
 		self.raise_exception_if_context_not_set()
 		context = self.get_context()
-		__class__._metadata_file_lock.acquire()
-		__class__._metadata[context["source_name"]]["files"][context["file_path"]] = self.get_initialized_metadata()
-		__class__._metadata_file_lock.release()
+		self._metadata_file_lock.acquire()
+		self._metadata[context["source_name"]]["files"][context["file_path"]] = self.get_initialized_metadata()
+		self._metadata_file_lock.release()
 
 	def delete_metadata(self):
-		self.raise_exception_if_not_initialized()
 		self.raise_exception_if_context_not_set()
 		context = self.get_context()
-		__class__._metadata_file_lock.acquire()
-		del __class__._metadata[context["source_name"]]["files"][context["file_path"]]
-		__class__._metadata_file_lock.release()
+		self._metadata_file_lock.acquire()
+		del self._metadata[context["source_name"]]["files"][context["file_path"]]
+		self._metadata_file_lock.release()
 	
 	def get_attribute_for_file(self, attribute_name):
-		self.raise_exception_if_not_initialized()
 		self.raise_exception_if_context_not_set()
 		file_metadata = self.get_metadata_for_file()
 		try:
@@ -92,7 +64,6 @@ class MetadataManager(LHContext):
 			)
 	
 	def set_attribute_for_file(self, attribute_name, attribute_type, attribute_value):
-		self.raise_exception_if_not_initialized()
 		self.raise_exception_if_context_not_set()
 		if not self.metadata_exists_for_file():
 			self.initialize_metadata_for_file()
@@ -104,9 +75,9 @@ class MetadataManager(LHContext):
 				f'Metadata submitted for invalid key: {attribute_name}'
 			)
 		if type(attribute_value) is attribute_type:
-			__class__._metadata_file_lock.acquire()
-			__class__._metadata[context["source_name"]]["files"][context["file_path"]][attribute_name] = attribute_value
-			__class__._metadata_file_lock.release()
+			self._metadata_file_lock.acquire()
+			self._metadata[context["source_name"]]["files"][context["file_path"]][attribute_name] = attribute_value
+			self._metadata_file_lock.release()
 		else:
 			attribute_name = format_section_str([context["source_name"], "files", context["file_path"], attribute_name])
 			raise InvalidMetadataSubmissionError(
@@ -146,21 +117,19 @@ class MetadataManager(LHContext):
 		self.set_attribute_for_file("cancelled", bool, cancelled_flag)
 	
 	def get_metadata_for_file(self):
-		self.raise_exception_if_not_initialized()
 		self.raise_exception_if_context_not_set()
 		context = self.get_context()
-		__class__._metadata_file_lock.acquire()
+		self._metadata_file_lock.acquire()
 		metadata_exists = self.metadata_exists_for_file()
 		if metadata_exists:
-			metadata = __class__._metadata[context["source_name"]]["files"][context["file_path"]].copy()
-		__class__._metadata_file_lock.release()
+			metadata = self._metadata[context["source_name"]]["files"][context["file_path"]].copy()
+		self._metadata_file_lock.release()
 		if metadata_exists:
 			return metadata
 		else:
 			raise NoMetadataError(context["source_name"], context["file_path"])
 	
 	def set_metadata_for_file(self, metadata):
-		self.raise_exception_if_not_initialized()
 		self.raise_exception_if_context_not_set()
 		context = self.get_context()
 		try:
@@ -184,43 +153,38 @@ class MetadataManager(LHContext):
 			)
 
 	def metadata_exists_for_file(self):
-		self.raise_exception_if_not_initialized()
 		self.raise_exception_if_context_not_set()
 		context = self.get_context()
-		return context["file_path"] in __class__._metadata[context["source_name"]]["files"]
+		return context["file_path"] in self._metadata[context["source_name"]]["files"]
 	
 	def error_exists_for_file(self):
 		return self.get_download_failed_flag_for_file() or self.get_extract_failed_flag_for_file() or self.get_cancelled_flag_for_file()
 	
 	def flush_metadata_to_file(self):
-		self.raise_exception_if_not_initialized()
-		__class__._metadata_file_lock.acquire()
-		with open(__class__._metadata_file_path, "w") as metadata_file:
-			json.dump(__class__._metadata, metadata_file, indent=2)
-		__class__._metadata_file_lock.release()
+		self._metadata_file_lock.acquire()
+		with open(self._metadata_file_path, "w") as metadata_file:
+			json.dump(self._metadata, metadata_file, indent=2)
+		self._metadata_file_lock.release()
 	
 	def start_flush_metadata_process(self):
-		self.raise_exception_if_not_initialized()
-		if not __class__._enable_flush_metadata_process:
-			__class__._flush_metadata_proc_pool = ThreadPoolExecutor(max_workers=1)
-			__class__._enable_flush_metadata_process = True
-			__class__._flush_metadata_proc_future = self._flush_metadata_proc_pool.submit(self.flush_metadata_loop)
+		if not self._enable_flush_metadata_process:
+			self._flush_metadata_proc_pool = ThreadPoolExecutor(max_workers=1)
+			self._enable_flush_metadata_process = True
+			self._flush_metadata_proc_future = self._flush_metadata_proc_pool.submit(self.flush_metadata_loop)
 	
 	def stop_flush_metadata_process(self):
-		self.raise_exception_if_not_initialized()
-		if __class__._enable_flush_metadata_process:
-			__class__._enable_flush_metadata_process = False
-			wait([__class__._flush_metadata_proc_future])
-			__class__._flush_metadata_proc_pool.shutdown(wait=True, cancel_futures=False)
-			__class__._flush_metadata_proc_pool = None
-			__class__._flush_metadata_proc_future = None
+		if self._enable_flush_metadata_process:
+			self._enable_flush_metadata_process = False
+			wait([self._flush_metadata_proc_future])
+			self._flush_metadata_proc_pool.shutdown(wait=True, cancel_futures=False)
+			self._flush_metadata_proc_pool = None
+			self._flush_metadata_proc_future = None
 	
 	def flush_metadata_loop(self):
-		self.raise_exception_if_not_initialized()
-		start = time() - __class__._metadata_flush_seconds # Don't wait for first cycle
-		while __class__._enable_flush_metadata_process:
+		start = time() - self._metadata_flush_seconds # Don't wait for first cycle
+		while self._enable_flush_metadata_process:
 			# Loop often and check time since last flush to allow faster exiting
-			if __class__._metadata_flush_seconds - (time() - start) <= 0:
+			if self._metadata_flush_seconds - (time() - start) <= 0:
 				start = time()
 				self.flush_metadata_to_file()
 			sleep(5)

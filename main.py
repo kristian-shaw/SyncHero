@@ -15,100 +15,11 @@ import json
 import signal
 import sys
 
+logger = None
+metadata_manager = None
+progress_manager = None
+process_manager = None
 exiting = None
-main_thread_active = None
-
-def stop_processes(metadata_manager, logger, process_manager):
-	global exiting
-	global main_thread_active
-	if not exiting:
-		exiting = True
-		print("INFO: Exit process started")
-		if logger.is_drawing():
-			logger.stop_drawing_progress()
-		metadata_manager.stop_flush_metadata_process()
-		pools = process_manager.get_download_pools() + [
-			process_manager.get_extract_pool(),
-			process_manager.get_delete_pool()
-		]
-		print("INFO: Waiting for current processes to finish...")
-		for pool in pools:
-			if pool is not None:
-				pool.shutdown(wait=True, cancel_futures=True)
-		metadata_manager.flush_metadata_to_file()
-		process_manager.get_exit_pool().shutdown(wait=False, cancel_futures=True)
-
-def register_processed_file(progress_manager, logger, context_progress):
-	if context_progress is None or context_progress.cancelled:
-		processed_files, failed_files = progress_manager.register_failed_file()
-	elif len(context_progress.errors) == 0:
-		processed_files, failed_files = progress_manager.register_processed_file()
-	else:
-		context = context_progress.context
-		metadata = context_progress.metadata
-		if metadata["is_archive"]:
-			message = f'ERROR: Errors occured while processing archive file. source_name: {context["source_name"]}, file_path: {context["file_path"]}'
-		else:
-			message = f'ERROR: Errors occured while downloading file. source_name: {context["source_name"]}, file_path: {context["file_path"]}'
-		
-		processed_files, failed_files = progress_manager.register_failed_file()
-		logger.submit_output(message)
-		tracebacks = '\n'.join(['\n'.join(format_exception(None, error, error.__traceback__)) for error in context_progress.errors])
-		logger.write_to_log_file(f'{message}\n' + tracebacks)
-	logger.set_done_files(processed_files + failed_files)
-
-"""extract_archive_file
-Parameters:
-context - the context map for the file to be extracted
-sevenzip - 7z instance with context already set
-root_context - the context map for the top level archive in the chain
-Returns: [ProcessResult]
-"""
-def extract_archive_file(context, sevenzip, root_context=None):
-	if root_context is None:
-		root_context = context.copy()
-	destination_root_dir = sevenzip.get_destination_root_dir()
-	archive_extract_dir = sevenzip.get_extract_root_dir()
-	archive_result = ProcessResult(ResultStatus.DONE, context, root_context, None) # Always included in return value as the last element
-	results = []
-	try:
-		sevenzip.extract_archive_file()
-	except Exception as e:
-		archive_result.status = ResultStatus.EXTRACT_FAILED
-		archive_result.error = e
-		sevenzip.free_context()
-		return [archive_result]
-	for dirpath, dirnames, filenames in archive_extract_dir.walk():
-		for filename in filenames:
-			full_file_path = dirpath / filename
-			result_file_path = full_file_path.parts[len(destination_root_dir.parts)+1:len(full_file_path.parts)] # Get the path relative from the source directory
-			sevenzip.set_context_file_path(str(result_file_path))
-			extracted_file_result = ProcessResult(ResultStatus.DONE, sevenzip.get_context(), root_context, None)
-			try:
-				if sevenzip.is_archive_file(full_file_path):
-					extracted_file_result.status = ResultStatus.EXTRACT_NEEDED
-			except Exception as e:
-				archive_result.status = ResultStatus.EXTRACT_FAILED
-				archive_result.error = e
-				sevenzip.free_context()
-				return [archive_result] # Minimise further processing for the root archive by returning only the first error
-			results.append(extracted_file_result)
-	sevenzip.free_context()
-	return results + [archive_result]
-
-def download_file(context, rclone, sevenzip):
-	result = ProcessResult(ResultStatus.DONE, context, context, None)
-	try:
-		rclone.download_file()
-		if sevenzip.is_archive_file():
-			result.status = ResultStatus.EXTRACT_NEEDED
-	except Exception as e:
-		result.status = ResultStatus.DOWNLOAD_FAILED
-		result.error = e
-	finally:
-		rclone.free_context()
-		sevenzip.free_context()
-	return [result]
 
 def main(arguments):
 	# parser = argparse.ArgumentParser(
@@ -149,6 +60,7 @@ def main(arguments):
 	except KeyError:
 		log_dir = cwd
 
+	global logger
 	logger = Logger(log_dir, 50, 60)
 
 	rclone_path = None
@@ -167,9 +79,7 @@ def main(arguments):
 	except KeyError:
 		rclone_config_path = cwd / "rclone.conf"
 
-	rclone = RClone()
-	rclone_init_args = [rclone_path, rclone_config_path, config["sources"], destination_root_dir]
-	rclone.init(*rclone_init_args)
+	RClone.configure(rclone_path, destination_root_dir, rclone_config_path, config["sources"])
 	
 	sevenzip_path = None
 	try:
@@ -179,8 +89,7 @@ def main(arguments):
 	except KeyError:
 		sevenzip_path = cwd / "7z.exe"
 	
-	sevenzip = SevenZip()
-	sevenzip.init(sevenzip_path, destination_root_dir)
+	SevenZip.configure(sevenzip_path, destination_root_dir)
 
 	metadata_file_path = cwd / "metadata.json"
 	if not metadata_file_path.is_file():
@@ -199,13 +108,14 @@ def main(arguments):
 			print(format_exception(None, error, error.__traceback__))
 			sys.exit(1)
 
-	metadata_manager = MetadataManager()
-	metadata_manager.init(
+	global metadata_manager
+	metadata_manager = MetadataManager(
 		config["sources"].keys(),
 		metadata_file_path,
 		config["settings"]["metadata_flush_loop_seconds"]
 	)
 
+	global progress_manager
 	progress_manager = ProgressManager()
 
 	remote_names = set([source["remote_name"] for source in config["sources"].values()])
@@ -216,6 +126,7 @@ def main(arguments):
 			download_workers_per_remote[remote_name] = config["remote_configs"][remote_name]["max_concurrent_downloads"]
 		except KeyError:
 			print(f'ERROR: max_concurrent_downloads not configured for remote_name: {remote_name}')
+			sys.exit(1)
 	for source_name, source_config in config["sources"].items():
 		remote_name = source_config["remote_name"]
 		if remote_name not in download_workers_per_remote:
@@ -225,6 +136,7 @@ def main(arguments):
 			download_workers_per_remote[remote_name] = config["remote_configs"][remote_name]["max_concurrent_downloads"]
 		source_remote_name_map[source_name] = remote_name
 
+	global process_manager
 	process_manager = ProcessManager(
 		download_workers_per_remote,
 		config["settings"]["max_concurrent_extracts"],
@@ -233,31 +145,31 @@ def main(arguments):
 	)
 
 	global exiting
-	global main_thread_active
 	exiting = False
-	main_thread_active = True
-	exit_signal_handler = lambda signum, frame: process_manager.submit_exit_task(stop_processes, metadata_manager, logger, process_manager)
+	exit_signal_handler = lambda signum, frame: process_manager.submit_exit_task(stop_processes)
 	signal.signal(signal.SIGTERM, exit_signal_handler)
 	signal.signal(signal.SIGINT, exit_signal_handler)
 
-	print("INFO: Fetching file lists from sources")
-	remote_files = dict()
-	remote_file_count = 0
-	for source_name in config["sources"].keys():
-		if exiting:
-			break
-		rclone.set_context_source_name(source_name)
-		remote_files[source_name] = []
-		for file_info in rclone.fetch_file_info_list():
+	try:
+		print("INFO: Fetching file lists from sources")
+		rclone = RClone()
+		remote_files = dict()
+		remote_file_count = 0
+		for source_name in config["sources"].keys():
 			if exiting:
 				break
-			remote_file_count += 1
-			remote_files[source_name].append(file_info)
-		remote_files[source_name].sort(key=lambda item: item[0])
-		
-	remote_files = dict(sorted(remote_files.items()))
-	print("INFO: Starting processes")
-	try:
+			rclone.set_context_source_name(source_name)
+			remote_files[source_name] = []
+			for file_info in rclone.fetch_file_info_list():
+				if exiting:
+					break
+				remote_file_count += 1
+				remote_files[source_name].append(file_info)
+			remote_files[source_name].sort(key=lambda item: item[0])
+		del rclone
+			
+		remote_files = dict(sorted(remote_files.items()))
+		print("INFO: Starting processes")
 		metadata_manager.start_flush_metadata_process()
 		contexts_in_progress = dict()
 		for source_name, file_info_list in remote_files.items():
@@ -274,12 +186,14 @@ def main(arguments):
 				
 				if metadata_manager.metadata_exists_for_file() and not metadata_manager.error_exists_for_file() and metadata_manager.get_hash_for_file() == file_hash:
 					remote_file_count -= 1
+					metadata_manager.free_context()
 				else:
 					metadata_manager.initialize_metadata_for_file()
 					metadata_manager.set_cancelled_flag_for_file(True) # Assume cancelled until proven otherwise
 					metadata_manager.set_hash_for_file(file_hash)
 					context = metadata_manager.get_context()
-					contexts_in_progress[metadata_manager.get_context_hash()] = ContextProgress(
+					context_hash = metadata_manager.get_context_hash()
+					contexts_in_progress[context_hash] = ContextProgress(
 						context,
 						metadata_manager.get_metadata_for_file(),
 						set(),
@@ -287,18 +201,16 @@ def main(arguments):
 						{remote_file_path},
 						False
 					)
+					metadata_manager.free_context()
 					thread_rclone = RClone()
-					thread_rclone.set_context(context)
 					thread_sevenzip = SevenZip()
-					thread_sevenzip.set_context(context)
 					download_file_future = process_manager.submit_download_task(
 						context,
 						context,
 						download_file,
 						context, thread_rclone, thread_sevenzip
 					)
-					contexts_in_progress[metadata_manager.get_context_hash()].futures.add(download_file_future)
-				metadata_manager.free_context()
+					contexts_in_progress[context_hash].futures.add(download_file_future)
 
 		progress_manager.set_total_files(remote_file_count)
 		logger.set_total_files(remote_file_count)
@@ -315,6 +227,7 @@ def main(arguments):
 					process_manager.remove_future(future)
 					metadata_manager.set_context(root_context)
 					root_context_hash = metadata_manager.get_context_hash()
+					metadata_manager.free_context()
 					contexts_in_progress[root_context_hash].futures.discard(future)
 					contexts_in_progress[root_context_hash].files_to_process.discard(root_context["file_path"])
 					if future.cancelled():
@@ -326,10 +239,11 @@ def main(arguments):
 								case ResultStatus.DONE:
 									pass # Nothing to do
 								case ResultStatus.EXTRACT_NEEDED:
+									metadata_manager.set_context(root_context)
 									metadata_manager.set_archive_flag_for_file(True)
+									contexts_in_progress[root_context_hash].metadata = metadata_manager.get_metadata_for_file()
+									metadata_manager.free_context()
 									thread_sevenzip = SevenZip()
-									thread_sevenzip.set_context(context)
-									# print(f'Extracting {Path(context["source_name"]) / Path(context["file_path"])}')
 									try:
 										extract_archive_file_future = process_manager.submit_extract_task(
 											context,
@@ -342,18 +256,22 @@ def main(arguments):
 									except RuntimeError: 
 										pass # Ignore thread pool shutting down
 								case ResultStatus.DOWNLOAD_FAILED | ResultStatus.EXTRACT_FAILED:
+									metadata_manager.set_context(root_context)
 									contexts_in_progress[root_context_hash].errors.append(result.error)
 									if result.status == ResultStatus.DOWNLOAD_FAILED:
 										metadata_manager.set_download_failed_flag_for_file(True)
 									if result.status == ResultStatus.EXTRACT_FAILED:
 										metadata_manager.set_extract_failed_flag_for_file(True)
+									contexts_in_progress[root_context_hash].metadata = metadata_manager.get_metadata_for_file()
+									metadata_manager.free_context()
 									for context_future in contexts_in_progress[root_context_hash].futures: # Cancel all further processing for the root context at the first failure
 										context_future.cancel()
-					contexts_in_progress[root_context_hash].metadata = metadata_manager.get_metadata_for_file()
 					if len(contexts_in_progress[root_context_hash].files_to_process) == 0: # True for completed or failed downloads of non-archives as well as fully processed or failed root archives
+						metadata_manager.set_context(root_context)
 						metadata_manager.set_cancelled_flag_for_file(contexts_in_progress[root_context_hash].cancelled)
-						register_processed_file(progress_manager, logger, contexts_in_progress[root_context_hash])
-					metadata_manager.free_context()
+						contexts_in_progress[root_context_hash].metadata = metadata_manager.get_metadata_for_file()
+						metadata_manager.free_context()
+						register_processed_file(contexts_in_progress[root_context_hash])
 					break # Fall back to while loop
 			except TimeoutError:
 				pass 
@@ -363,10 +281,111 @@ def main(arguments):
 		logger.submit_output(message)
 		logger.write_to_log_file(f'{message}\n' + '\n'.join(format_exception(None, error, error.__traceback__)))
 	finally:
-		process_manager.submit_exit_task(stop_processes, metadata_manager, logger, process_manager)
+		process_manager.submit_exit_task(stop_processes)
 		print("INFO: Main thread waiting for exit process")
 		wait([process_manager.get_exit_future()])
 		print(f'INFO: {progress_manager.get_processed_files()}/{progress_manager.get_total_files()} files have been successfully processed')
+
+def download_file(context, rclone, sevenzip):
+	result = ProcessResult(ResultStatus.DONE, context, context, None)
+	try:
+		rclone.set_context(context)
+		rclone.download_file()
+		rclone.free_context()
+		sevenzip.set_context(context)
+		if sevenzip.is_archive_file():
+			result.status = ResultStatus.EXTRACT_NEEDED
+		sevenzip.free_context()
+	except Exception as e:
+		result.status = ResultStatus.DOWNLOAD_FAILED
+		result.error = e
+	finally:
+		rclone.free_context()
+		sevenzip.free_context()
+	return [result]
+
+"""extract_archive_file
+Parameters:
+context - the context map for the file to be extracted
+sevenzip - 7z instance with context already set
+root_context - the context map for the top level archive in the chain
+Returns: [ProcessResult]
+"""
+def extract_archive_file(context, sevenzip, root_context=None):
+	if root_context is None:
+		root_context = context.copy()
+	try:
+		sevenzip.set_context(context)
+		destination_root_dir = sevenzip.get_destination_root_dir()
+		archive_extract_dir = sevenzip.get_extract_root_dir()
+		archive_result = ProcessResult(ResultStatus.DONE, context, root_context, None) # Always included in return value as the last element
+		sevenzip.extract_archive_file()
+	except Exception as e:
+		archive_result.status = ResultStatus.EXTRACT_FAILED
+		archive_result.error = e
+		sevenzip.free_context()
+		return [archive_result]
+	results = []
+	for dirpath, dirnames, filenames in archive_extract_dir.walk():
+		for filename in filenames:
+			full_file_path = dirpath / filename
+			result_file_path = full_file_path.parts[len(destination_root_dir.parts)+1:len(full_file_path.parts)] # Get the path relative from the source directory
+			try:
+				sevenzip.set_context_file_path(str(result_file_path))
+				extracted_file_result = ProcessResult(ResultStatus.DONE, sevenzip.get_context(), root_context, None)
+				if sevenzip.is_archive_file():
+					extracted_file_result.status = ResultStatus.EXTRACT_NEEDED
+			except Exception as e:
+				archive_result.status = ResultStatus.EXTRACT_FAILED
+				archive_result.error = e
+				sevenzip.free_context()
+				return [archive_result] # Minimise further processing for the root archive by returning only the first error
+			results.append(extracted_file_result)
+	sevenzip.free_context()
+	return results + [archive_result]
+
+def register_processed_file(context_progress):
+	global logger
+	global progress_manager
+	if context_progress is None or context_progress.cancelled:
+		processed_files, failed_files = progress_manager.register_failed_file()
+	elif len(context_progress.errors) == 0:
+		processed_files, failed_files = progress_manager.register_processed_file()
+	else:
+		context = context_progress.context
+		metadata = context_progress.metadata
+		if metadata["is_archive"]:
+			message = f'ERROR: Errors occured while processing archive file. source_name: {context["source_name"]}, file_path: {context["file_path"]}'
+		else:
+			message = f'ERROR: Errors occured while downloading file. source_name: {context["source_name"]}, file_path: {context["file_path"]}'
+		
+		processed_files, failed_files = progress_manager.register_failed_file()
+		logger.submit_output(message)
+		tracebacks = '\n'.join(['\n'.join(format_exception(None, error, error.__traceback__)) for error in context_progress.errors])
+		logger.write_to_log_file(f'{message}\n' + tracebacks)
+	logger.set_done_files(processed_files + failed_files)
+
+def stop_processes():
+	global logger
+	global metadata_manager
+	global process_manager
+	global exiting
+	if not exiting:
+		exiting = True
+		print("INFO: Exit process started")
+		if logger.is_drawing():
+			logger.stop_drawing_progress()
+		metadata_manager.stop_flush_metadata_process()
+		pools = process_manager.get_download_pools() + [
+			process_manager.get_extract_pool(),
+			process_manager.get_delete_pool()
+		]
+		print("INFO: Waiting for current processes to finish...")
+		for pool in pools:
+			if pool is not None:
+				pool.shutdown(wait=True, cancel_futures=True)
+		metadata_manager.flush_metadata_to_file()
+		process_manager.get_exit_pool().shutdown(wait=False, cancel_futures=True)
 
 if __name__ == "__main__":
 	sys.exit(main(sys.argv[1:]))

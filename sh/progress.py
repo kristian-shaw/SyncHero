@@ -1,7 +1,6 @@
 from .helpers import *
-from .context import InitializationError, Initializable
 
-from multiprocessing import Manager
+from multiprocessing import Lock
 
 class ContextProgress:
 	def __init__(self, context, metadata=None, futures=set(), errors=[], files_to_process=set(), cancelled=False):
@@ -12,39 +11,15 @@ class ContextProgress:
 		self.files_to_process = files_to_process
 		self.cancelled = cancelled
 		
-class ProgressManager(Initializable):
+class ProgressManager:
 	def __init__(self):
-		super().__init__()
-		if not self.get_class_init_status():
-			self._total_files = 0
-			self._processed_files = 0
-			self._failed_files = 0
-			mp_manager = Manager()
-			self._processed_files_lock = mp_manager.Lock()
-			self._failed_files_lock = mp_manager.Lock()
-			self._total_files_lock = mp_manager.Lock()
-			self._register_lock = mp_manager.Lock()
-			# self._completion_lock = mp_manager.Lock()
-			# self._completion_lock.acquire()
-			self.set_class_init_status(True)
-		else:
-			raise InitializationError(f'Only a single {self.__class__.__name__} instance is allowed to be created.')
-	
-	# def __getstate__(self):
-	# 	self_dict = self.__dict__.copy()
-	# 	del_dict_keys(
-	# 		self_dict,
-	# 		[
-	# 			'_processed_files_lock',
-	# 			'_failed_files_lock',
-	# 			'_register_lock',
-	# 			'_completion_lock'
-	# 		]
-	# 	)
-	# 	return self_dict
-
-	# def __setstate__(self, self_dict):
-	# 	self.__dict__ = self_dict
+		self._total_files = 0
+		self._processed_files = 0
+		self._failed_files = 0
+		self._processed_files_lock = Lock()
+		self._failed_files_lock = Lock()
+		self._total_files_lock = Lock()
+		self._register_lock = Lock()
 
 	def register_processed_file(self):
 		self._processed_files_lock.acquire()
@@ -63,9 +38,6 @@ class ProgressManager(Initializable):
 		self._failed_files_lock.release()
 		self._total_files_lock.release()
 		self._register_lock.release()
-		# processed_and_failed_files +=1
-		# if processed_and_failed_files == self._total_files:
-		# 	self._completion_lock.release()
 		return (processed_files, failed_files)
 
 	def register_failed_file(self):
@@ -85,9 +57,6 @@ class ProgressManager(Initializable):
 		self._failed_files_lock.release()
 		self._total_files_lock.release()
 		self._register_lock.release()
-		# processed_and_failed_files +=1
-		# if processed_and_failed_files == self._total_files:
-		# 	self._completion_lock.release()
 		return (processed_files, failed_files)
 
 	def set_total_files(self, total_files):
@@ -130,9 +99,6 @@ class ProgressManager(Initializable):
 		failed_files = self._failed_files
 		self._failed_files_lock.release()
 		return failed_files
-	
-	# def get_completion_lock(self):
-	# 	return self._completion_lock
 
 class ProgressError(Exception):
 	"""Exception raised for errors during progress manager operations
