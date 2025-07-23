@@ -27,7 +27,7 @@ class ContextFileType(Enum):
 
 
 class ContextMetadata(BaseModel, validate_assignment=True):
-    errors: set[ContextError] = Field(
+    error_codes: set[ContextError] = Field(
         alias="a", default_factory=set
     )  # Codes (enum) for errors
     file_type: ContextFileType = Field(
@@ -137,27 +137,27 @@ class MetadataManager(Contextual):
                 setattr(e, "context", self.get_context())
                 raise e
 
-    def get_error_flags(self) -> set[ContextError]:
-        return self.get_attribute("errors")
+    def get_error_codes(self) -> set[ContextError]:
+        return self.get_attribute("error_codes")
 
-    def set_error_flags(self, error_codes: set[ContextError]) -> None:
-        self.set_attribute("errors", error_codes)
+    def set_error_codes(self, error_codes: set[ContextError]) -> None:
+        self.set_attribute("error_codes", error_codes)
 
-    def set_error_flag(
-        self, error_code: ContextError, flag_value: bool, use_lock: bool = True
+    def set_error_code_status(
+        self, error_code: ContextError, status: bool, use_lock: bool = True
     ) -> None:
         with self._metadata_file_lock if use_lock else nullcontext():
             error_codes = set[ContextError](
-                self.get_attribute("errors", use_lock=False)
+                self.get_attribute("error_codes", use_lock=False)
             )
-            if flag_value:
+            if status:
                 error_codes.add(error_code)
             else:
                 error_codes.discard(error_code)
-            self.set_attribute("errors", error_codes, use_lock=False)
+            self.set_attribute("error_codes", error_codes, use_lock=False)
 
-    def clear_error_flags(self) -> None:
-        self.set_attribute("errors", set())
+    def clear_error_codes(self) -> None:
+        self.set_attribute("error_codes", set())
 
     def get_file_type(self) -> ContextFileType:
         return self.get_attribute("file_type")
@@ -203,7 +203,7 @@ class MetadataManager(Contextual):
         self.raise_exception_if_context_not_set()
         with self._metadata_file_lock if use_lock else nullcontext():
             self.raise_exception_if_no_metadata()
-            return len(self._metadata[self.get_metadata_key()].errors) > 0
+            return len(self._metadata[self.get_metadata_key()].error_codes) > 0
 
     def flush_metadata(self, use_lock: bool = True) -> None:
         with self._metadata_file_lock if use_lock else nullcontext():

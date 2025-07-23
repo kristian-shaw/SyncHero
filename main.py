@@ -200,7 +200,7 @@ def main(arguments):
                 else:
                     metadata_manager.initialize_metadata()
                     metadata_manager.set_remote_hash(file_hash)
-                    metadata_manager.set_error_flag(
+                    metadata_manager.set_error_code_status(
                         ContextError.CANCELLED, True
                     )  # Assume cancelled until proven otherwise
                     context = metadata_manager.get_context()
@@ -295,11 +295,11 @@ def main(arguments):
                                         root_context_path
                                     ].errors.append(result.error)
                                     if result.status == ResultStatus.DOWNLOAD_FAILED:
-                                        metadata_manager.set_error_flag(
+                                        metadata_manager.set_error_code_status(
                                             ContextError.DOWNLOAD_FAILED, True
                                         )
                                     if result.status == ResultStatus.EXTRACT_FAILED:
-                                        metadata_manager.set_error_flag(
+                                        metadata_manager.set_error_code_status(
                                             ContextError.EXTRACT_FAILED, True
                                         )
                                     contexts_in_progress[root_context_path].metadata = (
@@ -313,7 +313,7 @@ def main(arguments):
                         len(contexts_in_progress[root_context_path].files_to_process)
                         == 0
                     ):  # True for completed or failed downloads of non-archives as well as fully processed or failed root archives
-                        metadata_manager.set_error_flag(
+                        metadata_manager.set_error_code_status(
                             ContextError.CANCELLED,
                             contexts_in_progress[root_context_path].cancelled,
                         )
