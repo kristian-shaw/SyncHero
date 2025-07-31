@@ -1,5 +1,5 @@
 from .helpers import *
-from .context import Contextual
+from .context import Contextual, ContextualValidationError
 
 from concurrent.futures import ThreadPoolExecutor, wait
 from contextlib import nullcontext
@@ -33,9 +33,9 @@ class ContextMetadata(BaseModel, validate_assignment=True):
     file_type: ContextFileType = Field(
         alias="b", default=ContextFileType.UNKNOWN
     )  # Code (enum) for the file type
-    parent_path: Path = Field(
+    parent_key: Path = Field(
         alias="c", default_factory=Path
-    )  # The path of the archive the file is a member of, or an empty string if not an archive member or a root archive
+    )  # The metadata key of the archive the file is a member of, or "." if not a member of an archive
     remote_hash: str = Field(alias="d", default="")  # From remote storage API
 
     def __delitem__(self, item: str) -> None:
@@ -133,9 +133,9 @@ class MetadataManager(Contextual):
                 self._metadata[self.get_metadata_key()][
                     attribute_name
                 ] = attribute_value
-            except ValidationError as e:
-                setattr(e, "context", self.get_context())
-                raise e
+            except ValidationError as ve:
+                cve = ContextualValidationError(self.get_context(), ve)
+            raise cve
 
     def get_error_codes(self) -> set[ContextError]:
         return self.get_attribute("error_codes")
@@ -171,11 +171,11 @@ class MetadataManager(Contextual):
     def set_remote_hash(self, remote_hash: str) -> None:
         self.set_attribute("remote_hash", remote_hash)
 
-    def get_parent_path(self) -> Path:
-        return self.get_attribute("parent_hash")
+    def get_parent_key(self) -> Path:
+        return self.get_attribute("parent_key")
 
-    def set_parent_path(self, parent_hash: Path) -> None:
-        self.set_attribute("parent_hash", parent_hash)
+    def set_parent_key(self, parent_key: Path) -> None:
+        self.set_attribute("parent_key", parent_key)
 
     def get_metadata(self, use_lock: bool = True) -> ContextMetadata:
         self.raise_exception_if_context_not_set()
@@ -191,9 +191,9 @@ class MetadataManager(Contextual):
             try:
                 new_metadata = ContextMetadata.model_validate(metadata)
                 self._metadata[self.get_metadata_key()] = new_metadata
-            except ValidationError as e:
-                setattr(e, "context", self.get_context())
-                raise e
+            except ValidationError as ve:
+                cve = ContextualValidationError(self.get_context(), ve)
+            raise cve
 
     def metadata_exists(self) -> bool:
         self.raise_exception_if_context_not_set()

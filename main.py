@@ -1,3 +1,4 @@
+from sh.context import Context
 from sh.helpers import *
 from sh.logger import Logger
 from sh.metadata import MetadataManager, ContextError, ContextFileType
@@ -16,14 +17,15 @@ import json
 import signal
 import sys
 
-logger = None
-metadata_manager = None
-progress_manager = None
-process_manager = None
-exiting = None
+# Global variables
+logger: Logger | None = None
+metadata_manager: MetadataManager | None = None
+progress_manager: ProgressManager | None = None
+process_manager: ProcessManager | None = None
+exiting: bool | None = None
 
 
-def main(arguments):
+def main(arguments: list[str]) -> None:
     # parser = argparse.ArgumentParser(
     # 	description=__doc__,
     # 	formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -342,7 +344,7 @@ def main(arguments):
         )
 
 
-def download_file(context, rclone, sevenzip):
+def download_file(context: Context, rclone: RClone, sevenzip: SevenZip) -> list[ProcessResult]:
     result = ProcessResult(ResultStatus.DONE, context, context, None)
     try:
         rclone.set_context(context)
@@ -370,7 +372,7 @@ Returns: [ProcessResult]
 """
 
 
-def extract_archive_file(context, sevenzip, root_context=None):
+def extract_archive_file(context: Context, sevenzip: SevenZip, root_context: Context | None=None) -> list[ProcessResult]:
     if root_context is None:
         root_context = context.copy()
     try:
@@ -412,7 +414,7 @@ def extract_archive_file(context, sevenzip, root_context=None):
     return results + [archive_result]
 
 
-def register_processed_file(context_progress):
+def register_processed_file(context_progress) -> None:
     global logger
     global progress_manager
     if context_progress is None or context_progress.cancelled:
@@ -439,7 +441,7 @@ def register_processed_file(context_progress):
     logger.set_done_files(processed_files + failed_files)
 
 
-def stop_processes():
+def stop_processes() -> None:
     global logger
     global metadata_manager
     global process_manager

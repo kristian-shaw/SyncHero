@@ -3,7 +3,8 @@ from .helpers import *
 
 from multiprocessing import Lock
 from pathlib import Path
-from typing import Any
+from pydantic import ValidationError
+from typing import Any, Self
 
 import dataclasses
 
@@ -112,7 +113,7 @@ class Contextual(GloballyConfigured):
                     raise InvalidContextSubmissionError(
                         context.source_name,
                         file_path,
-                        f"Context is already in use. source_name: {context.source_name}, file_path: {safe_str(file_path)}",
+                        f"Context is already in use. Context: {context.__dict__}",
                     )
                 else:
                     target_pool_names.append(pool_name)
@@ -124,18 +125,18 @@ class Contextual(GloballyConfigured):
         return dataclasses.replace(self.context)  # Returns a copy
 
     def set_context(self, context: Context) -> None:
-        context = dataclasses.replace(
+        new_context = dataclasses.replace(
             context
         )  # Create a copy not modifiable by anything else
-        if not isinstance(context, Context):
+        if not isinstance(new_context, Context):
             raise InvalidContextSubmissionError(
                 "context",
-                context,
-                f"Invalid value submitted for context was not of type Context: {safe_str(context)}",
+                new_context,
+                f"Invalid value submitted for context was not of type Context: {safe_str(new_context)}",
             )
         else:
-            self.set_context_source_name(context.source_name)
-            self.set_context_file_path(context.file_path)
+            self.set_context_source_name(new_context.source_name)
+            self.set_context_file_path(new_context.file_path)
 
     def context_is_set(self) -> bool:
         context = self.get_context()
@@ -158,7 +159,7 @@ class Contextual(GloballyConfigured):
             raise InvalidContextError(
                 context.source_name,
                 context.file_path,
-                f"Context is not set. source_name: {context.source_name}, file_path: {safe_str(context.file_path)}",
+                f"Context is not set. Context: {context.__dict__}",
             )
 
 
@@ -187,19 +188,16 @@ class ContextualError(Exception):
     """Base Exception class for errors related to a Context
 
     Attributes:
-        source_name -- the name of the source in the context
-        file_path   -- the file path in the context
-        message     -- explanation of the error
+        context -- the context related to the error
+        message -- explanation of the error
     """
 
     def __init__(
-        self, source_name: str, file_path: str, message: str | None = None
+        self, context: Context, message: str | None = None
     ) -> None:
-        self.source_name = source_name
-        self.file_path = file_path
-
+        self.context = context
         if message is None:
-            message = f"A problem occured related to a Context. source_name: {source_name}, file_path: {file_path}"
+            message = f"A problem occured related to a Context: {context.__dict__}"
 
         super().__init__(message)
 
@@ -208,18 +206,36 @@ class InvalidContextError(ContextualError):
     """Exception raised for invalid context
 
     Attributes:
-        source_name -- the name of the source in the context
-        file_path   -- the file path in the context
-        message     -- explanation of the error
+        context -- the context related to the error
+        message -- explanation of the error
     """
 
     def __init__(
-        self, source_name: str, file_path: str, message: str | None = None
+        self, context: Context, message: str | None = None
     ) -> None:
-        self.source_name = source_name
-        self.file_path = file_path
-
+        self.context = context
         if message is None:
-            message = f"Invalid context. source_name: {safe_str(source_name)}, file_path: {safe_str(file_path)}"
+            message = f"Invalid context. Context: {context.__dict__}"
 
-        super().__init__(source_name, file_path, message)
+        super().__init__(context, message)
+
+
+class ContextualValidationError(Exception):
+    """Exception that includes a Pydantic ValidationError as an attribute as well as a context
+    By default the error message states the context first and then the message from the ValidationError
+
+    Attributes:
+        context          -- the context related to the error
+        validation_error -- the validation error
+        message          -- explanation of the error
+    """
+
+    def __init__(
+        self, context: Context, validation_error: ValidationError, message: str | None = None
+    ) -> None:
+        self.context = context
+        self.validation_error = validation_error
+        if message is None:
+            message = f"ValidationError occured. Context: {context.__dict__}\n{validation_error}"
+
+        super().__init__(message)
