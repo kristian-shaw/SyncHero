@@ -84,7 +84,7 @@ def main(arguments: list[str]) -> None:
         rclone_config_path = cwd / "rclone.conf"
 
     RClone.configure(
-        {"file_operator"},
+        "file_operator",
         rclone_path,
         destination_root_dir,
         rclone_config_path,
@@ -99,9 +99,9 @@ def main(arguments: list[str]) -> None:
     except KeyError:
         sevenzip_path = cwd / "7z.exe"
 
-    SevenZip.configure({"file_operator"}, sevenzip_path, destination_root_dir)
+    SevenZip.configure("file_operator", sevenzip_path, destination_root_dir)
 
-    MetadataManager.configure({"metadata"})
+    MetadataManager.configure("metadata")
     global metadata_manager
     try:
         metadata_manager = MetadataManager(
@@ -187,7 +187,7 @@ def main(arguments: list[str]) -> None:
             for file_info in file_info_list:
                 if exiting:
                     break
-                remote_file_path = str(Path(file_info[0]))
+                remote_file_path = Path(file_info[0])
                 file_size = file_info[1]
                 file_hash = file_info[2]
                 metadata_manager.set_context_source_name(source_name)
@@ -344,7 +344,9 @@ def main(arguments: list[str]) -> None:
         )
 
 
-def download_file(context: Context, rclone: RClone, sevenzip: SevenZip) -> list[ProcessResult]:
+def download_file(
+    context: Context, rclone: RClone, sevenzip: SevenZip
+) -> list[ProcessResult]:
     result = ProcessResult(ResultStatus.DONE, context, context, None)
     try:
         rclone.set_context(context)
@@ -372,7 +374,9 @@ Returns: [ProcessResult]
 """
 
 
-def extract_archive_file(context: Context, sevenzip: SevenZip, root_context: Context | None=None) -> list[ProcessResult]:
+def extract_archive_file(
+    context: Context, sevenzip: SevenZip, root_context: Context | None = None
+) -> list[ProcessResult]:
     if root_context is None:
         root_context = context.copy()
     try:
@@ -392,11 +396,11 @@ def extract_archive_file(context: Context, sevenzip: SevenZip, root_context: Con
     for dirpath, dirnames, filenames in archive_extract_dir.walk():
         for filename in filenames:
             full_file_path = dirpath / filename
-            result_file_path = full_file_path.parts[
+            result_file_path = Path(*(full_file_path.parts[
                 len(destination_root_dir.parts) + 1 : len(full_file_path.parts)
-            ]  # Get the path relative from the source directory
+            ]))  # Get the path relative from the source directory
             try:
-                sevenzip.set_context_file_path(str(result_file_path))
+                sevenzip.set_context_file_path(result_file_path)
                 extracted_file_result = ProcessResult(
                     ResultStatus.DONE, sevenzip.get_context(), root_context, None
                 )

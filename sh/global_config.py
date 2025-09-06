@@ -1,4 +1,4 @@
-_class_init_statuses: dict[bool] = dict()
+_class_init_statuses: dict[bool] = dict[bool]()
 
 
 class GloballyConfigured:

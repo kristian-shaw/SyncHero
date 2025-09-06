@@ -1,5 +1,5 @@
 from .helpers import *
-from .context import Contextual, ContextualValidationError
+from .context import Context, Contextual, ContextualValidationError
 
 from concurrent.futures import ThreadPoolExecutor, wait
 from contextlib import nullcontext
@@ -33,9 +33,9 @@ class ContextMetadata(BaseModel, validate_assignment=True):
     file_type: ContextFileType = Field(
         alias="b", default=ContextFileType.UNKNOWN
     )  # Code (enum) for the file type
-    parent_key: Path = Field(
-        alias="c", default_factory=Path
-    )  # The metadata key of the archive the file is a member of, or "." if not a member of an archive
+    parent_key: Path | None = Field(
+        alias="c", default=None
+    )  # The metadata key of the archive the file is a member of, or None if not a member of an archive
     remote_hash: str = Field(alias="d", default="")  # From remote storage API
 
     def __delitem__(self, item: str) -> None:
@@ -56,7 +56,7 @@ class MetadataDict(BaseModel):
     version: str = Field(alias="v", default="1.0")
     metadata: dict[Path, ContextMetadata] = Field(alias="m", default_factory=dict)
 
-    def __iter__(self) -> Iterable:
+    def __iter__(self) -> Iterable[ContextMetadata]:
         return iter(self.metadata)
 
     def __delitem__(self, item: Path) -> None:
@@ -74,7 +74,7 @@ class MetadataManager(Contextual):
         self, metadata_file_path: Path, metadata_flush_seconds: int, minimise_json: bool
     ):
         super().__init__()
-        self._metadata_file_lock = Lock()
+        self._metadata_lock = Lock()
         self._enable_flush_metadata_process = False
         self._metadata_file_path = metadata_file_path
         self._metadata_flush_seconds = metadata_flush_seconds
@@ -99,24 +99,23 @@ class MetadataManager(Contextual):
 
     def initialize_metadata(self, use_lock: bool = True) -> None:
         self.raise_exception_if_context_not_set()
-        with self._metadata_file_lock if use_lock else nullcontext():
+        with self._metadata_lock if use_lock else nullcontext():
             self._metadata[self.get_metadata_key()] = self.get_initialized_metadata()
 
     def delete_metadata(self, use_lock: bool = True) -> None:
         self.raise_exception_if_context_not_set()
-        with self._metadata_file_lock if use_lock else nullcontext():
+        with self._metadata_lock if use_lock else nullcontext():
             if self.metadata_exists():
                 del self._metadata[self.get_metadata_key()]
 
-    def get_attribute(self, attribute_name: str, use_lock: bool = True) -> Any:
+    def get_attribute(self, attribute_name: str) -> Any:
         self.raise_exception_if_context_not_set()
         if not self.attribute_name_exists(attribute_name):
             raise InvalidMetadataFetchError(
                 attribute_name, f"Metadata requested for invalid key: {attribute_name}"
             )
-        with self._metadata_file_lock if use_lock else nullcontext():
-            self.raise_exception_if_no_metadata()
-            return self._metadata[self.get_metadata_key()][attribute_name]
+        self.raise_exception_if_no_metadata()
+        return self._metadata[self.get_metadata_key()][attribute_name]
 
     def set_attribute(
         self, attribute_name: str, attribute_value: Any, use_lock: bool = True
@@ -126,97 +125,121 @@ class MetadataManager(Contextual):
             raise InvalidMetadataSubmissionError(
                 attribute_name, f"Metadata submitted for invalid key: {attribute_name}"
             )
-        with self._metadata_file_lock if use_lock else nullcontext():
+        with self._metadata_lock if use_lock else nullcontext():
             if not self.metadata_exists():
                 self.initialize_metadata(use_lock=False)
+            cve = None
             try:
                 self._metadata[self.get_metadata_key()][
                     attribute_name
                 ] = attribute_value
             except ValidationError as ve:
                 cve = ContextualValidationError(self.get_context(), ve)
-            raise cve
+            if cve is not None:
+                raise cve
 
     def get_error_codes(self) -> set[ContextError]:
         return self.get_attribute("error_codes")
 
-    def set_error_codes(self, error_codes: set[ContextError]) -> None:
-        self.set_attribute("error_codes", error_codes)
+    def set_error_codes(
+        self, error_codes: set[ContextError], use_lock: bool = True
+    ) -> None:
+        self.set_attribute("error_codes", error_codes, use_lock)
 
     def set_error_code_status(
         self, error_code: ContextError, status: bool, use_lock: bool = True
     ) -> None:
-        with self._metadata_file_lock if use_lock else nullcontext():
-            error_codes = set[ContextError](
-                self.get_attribute("error_codes", use_lock=False)
-            )
+        with self._metadata_lock if use_lock else nullcontext():
+            error_codes = set[ContextError](self.get_error_codes())
             if status:
                 error_codes.add(error_code)
             else:
                 error_codes.discard(error_code)
-            self.set_attribute("error_codes", error_codes, use_lock=False)
+            self.set_error_codes(error_codes, use_lock=False)
 
-    def clear_error_codes(self) -> None:
-        self.set_attribute("error_codes", set())
+    def clear_error_codes(self, use_lock: bool = True) -> None:
+        self.set_attribute("error_codes", set(), use_lock)
 
     def get_file_type(self) -> ContextFileType:
         return self.get_attribute("file_type")
 
-    def set_file_type(self, file_type_code: ContextFileType) -> None:
-        self.set_attribute("file_type", file_type_code)
+    def set_file_type(
+        self, file_type_code: ContextFileType, use_lock: bool = True
+    ) -> None:
+        self.set_attribute("file_type", file_type_code, use_lock)
 
     def get_remote_hash(self) -> str:
         return self.get_attribute("remote_hash")
 
-    def set_remote_hash(self, remote_hash: str) -> None:
-        self.set_attribute("remote_hash", remote_hash)
+    def set_remote_hash(self, remote_hash: str, use_lock: bool = True) -> None:
+        self.set_attribute("remote_hash", remote_hash, use_lock)
 
     def get_parent_key(self) -> Path:
         return self.get_attribute("parent_key")
 
-    def set_parent_key(self, parent_key: Path) -> None:
-        self.set_attribute("parent_key", parent_key)
+    def set_parent_key(self, parent_key: Path, use_lock: bool = True) -> None:
+        self.set_attribute("parent_key", parent_key, use_lock)
 
-    def get_metadata(self, use_lock: bool = True) -> ContextMetadata:
+    def get_metadata(self) -> ContextMetadata:
         self.raise_exception_if_context_not_set()
-        with self._metadata_file_lock if use_lock else nullcontext():
-            self.raise_exception_if_no_metadata()
-            return self._metadata[self.get_metadata_key()].model_copy()
+        self.raise_exception_if_no_metadata()
+        return self._metadata[self.get_metadata_key()].model_copy()
 
     def set_metadata(
         self, metadata: ContextMetadata | dict, use_lock: bool = True
     ) -> None:
         self.raise_exception_if_context_not_set()
-        with self._metadata_file_lock if use_lock else nullcontext():
+        with self._metadata_lock if use_lock else nullcontext():
+            cve = None
             try:
                 new_metadata = ContextMetadata.model_validate(metadata)
                 self._metadata[self.get_metadata_key()] = new_metadata
             except ValidationError as ve:
                 cve = ContextualValidationError(self.get_context(), ve)
-            raise cve
-
+            if cve is not None:
+                raise cve
     def metadata_exists(self) -> bool:
         self.raise_exception_if_context_not_set()
-        return self.get_metadata_key() in self._metadata
+        return self.get_metadata_key() in self._metadata.metadata
 
-    def error_exists(self, use_lock: bool = True) -> bool:
+    def error_exists(self) -> bool:
         self.raise_exception_if_context_not_set()
-        with self._metadata_file_lock if use_lock else nullcontext():
-            self.raise_exception_if_no_metadata()
-            return len(self._metadata[self.get_metadata_key()].error_codes) > 0
+        self.raise_exception_if_no_metadata()
+        return len(self._metadata[self.get_metadata_key()].error_codes) > 0
+
+    def is_archive_member(self) -> bool:
+        return self.get_parent_key() is not None
+
+    def is_archive(self) -> bool:
+        return self.get_file_type() == ContextFileType.ARCHIVE
+
+    def get_parent_archive_context(self) -> Context | None:
+        if self.is_archive_member():
+            return Context.from_path(self.get_parent_key())
+        else:
+            return None
+
+    def get_archive_member_contexts(self) -> list[Context]:
+        current_metadata_key = self.get_metadata_key()
+        results = []
+        for metadata_key, context_metadata in self._metadata.metadata.items():
+            if context_metadata.parent_key == current_metadata_key:
+                results.append(Context.from_path(metadata_key))
+        return results
 
     def flush_metadata(self, use_lock: bool = True) -> None:
-        with self._metadata_file_lock if use_lock else nullcontext():
-            with open(self._metadata_file_path, "w") as metadata_file:
-                metadata_file.write(
-                    json.dumps(
-                        self._metadata.model_dump(
-                            mode="json", by_alias=self._minimise_json
-                        ),
-                        indent=(2 if not self._minimise_json else None),
-                        separators=((",", ":") if self._minimise_json else None),
-                    )
+        with self._metadata_lock if use_lock else nullcontext():
+            metadata = self._metadata.model_copy()
+        with open(self._metadata_file_path, "w") as metadata_file:
+            metadata_file.write(
+                json.dumps(
+                    metadata.model_dump(
+                        mode="json", by_alias=self._minimise_json, exclude_none=True
+                    ),
+                    indent=(2 if not self._minimise_json else None),
+                    separators=((",", ":") if self._minimise_json else None),
                 )
+            )
 
     def start_flush_metadata_process(self) -> None:
         if not self._enable_flush_metadata_process:
