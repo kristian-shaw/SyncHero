@@ -198,8 +198,19 @@ def main(arguments: list[str]) -> None:
                     and not metadata_manager.error_exists()
                     and metadata_manager.get_remote_hash() == file_hash
                 ):
+                    # If the file was previously successfully processed and the remote hash hasn't changed, then skip the file
                     remote_file_count -= 1
                 else:
+                    current_context = metadata_manager.get_context()
+                    # If file was previously an archive, clear any metadata for previous members
+                    if metadata_manager.is_archive():
+                        for (
+                            member_context
+                        ) in metadata_manager.get_archive_member_contexts():
+                            metadata_manager.set_context(member_context)
+                            metadata_manager.delete_metadata()
+                    metadata_manager.set_context(current_context)
+
                     metadata_manager.initialize_metadata()
                     metadata_manager.set_remote_hash(file_hash)
                     metadata_manager.set_error_code_status(
@@ -365,15 +376,6 @@ def download_file(
     return [result]
 
 
-"""extract_archive_file
-Parameters:
-context - the context map for the file to be extracted
-sevenzip - 7z instance with context already set
-root_context - the context map for the top level archive in the chain
-Returns: [ProcessResult]
-"""
-
-
 def extract_archive_file(
     context: Context, sevenzip: SevenZip, root_context: Context | None = None
 ) -> list[ProcessResult]:
@@ -396,9 +398,13 @@ def extract_archive_file(
     for dirpath, dirnames, filenames in archive_extract_dir.walk():
         for filename in filenames:
             full_file_path = dirpath / filename
-            result_file_path = Path(*(full_file_path.parts[
-                len(destination_root_dir.parts) + 1 : len(full_file_path.parts)
-            ]))  # Get the path relative from the source directory
+            result_file_path = Path(
+                *(
+                    full_file_path.parts[
+                        len(destination_root_dir.parts) + 1 : len(full_file_path.parts)
+                    ]
+                )
+            )  # Get the path relative from the source directory
             try:
                 sevenzip.set_context_file_path(result_file_path)
                 extracted_file_result = ProcessResult(

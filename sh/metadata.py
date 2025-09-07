@@ -95,6 +95,7 @@ class MetadataManager(Contextual):
         return attribute_name in ContextMetadata.get_attribute_names()
 
     def get_metadata_key(self) -> str:
+        self.raise_exception_if_context_not_set()
         return self.context.as_path(include_source=True)
 
     def initialize_metadata(self, use_lock: bool = True) -> None:
@@ -198,6 +199,7 @@ class MetadataManager(Contextual):
                 cve = ContextualValidationError(self.get_context(), ve)
             if cve is not None:
                 raise cve
+
     def metadata_exists(self) -> bool:
         self.raise_exception_if_context_not_set()
         return self.get_metadata_key() in self._metadata.metadata
@@ -226,6 +228,17 @@ class MetadataManager(Contextual):
             if context_metadata.parent_key == current_metadata_key:
                 results.append(Context.from_path(metadata_key))
         return results
+    
+    def delete_archive_members_metadata(self, use_lock: bool = True) -> None:
+        self.raise_exception_if_context_not_set()
+        context = self.get_context()
+        with self._metadata_lock if use_lock else nullcontext():
+            if self.is_archive():
+                for member_context in self.get_archive_member_contexts():
+                    self.set_context(member_context)
+                    self.delete_archive_members_metadata(use_lock=False) # Recurse
+                    self.delete_metadata(use_lock=False)
+            self.set_context(context)
 
     def flush_metadata(self, use_lock: bool = True) -> None:
         with self._metadata_lock if use_lock else nullcontext():
