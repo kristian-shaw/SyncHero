@@ -2,7 +2,7 @@ from sh.context import Context
 from sh.helpers import *
 from sh.logger import Logger
 from sh.metadata import MetadataManager, ContextError, ContextFileType
-from sh.processes import ProcessManager, ProcessResult, ResultStatus
+from sh.processes import ProcessManager, ContextualFutureResult, ResultStatus
 from sh.progress import ContextProgress, ProgressManager
 from sh.rclone import RClone
 from sh.sevenzip import SevenZip
@@ -118,8 +118,8 @@ def main(arguments: list[str]) -> None:
     progress_manager = ProgressManager()
 
     remote_names = set([source["remote_name"] for source in config["sources"].values()])
-    download_workers_per_remote = dict()
-    source_remote_name_map = dict()
+    download_workers_per_remote = dict[str, int]()
+    source_remote_name_map = dict[str, str]()
     for remote_name in remote_names:
         try:
             download_workers_per_remote[remote_name] = config["remote_configs"][
@@ -201,22 +201,17 @@ def main(arguments: list[str]) -> None:
                     # If the file was previously successfully processed and the remote hash hasn't changed, then skip the file
                     remote_file_count -= 1
                 else:
-                    current_context = metadata_manager.get_context()
+                    context = metadata_manager.get_context()
+
                     # If file was previously an archive, clear any metadata for previous members
-                    if metadata_manager.is_archive():
-                        for (
-                            member_context
-                        ) in metadata_manager.get_archive_member_contexts():
-                            metadata_manager.set_context(member_context)
-                            metadata_manager.delete_metadata()
-                    metadata_manager.set_context(current_context)
+                    if metadata_manager.metadata_exists():
+                        metadata_manager.delete_archive_members_metadata()
 
                     metadata_manager.initialize_metadata()
                     metadata_manager.set_remote_hash(file_hash)
                     metadata_manager.set_error_code_status(
                         ContextError.CANCELLED, True
                     )  # Assume cancelled until proven otherwise
-                    context = metadata_manager.get_context()
                     context_path = context.as_path(include_source=True)
                     contexts_in_progress[context_path] = ContextProgress(
                         context,
@@ -230,7 +225,6 @@ def main(arguments: list[str]) -> None:
                     thread_rclone = RClone()
                     thread_sevenzip = SevenZip()
                     download_file_future = process_manager.submit_download_task(
-                        context,
                         context,
                         download_file,
                         context,
@@ -253,7 +247,7 @@ def main(arguments: list[str]) -> None:
                 for future in as_completed(
                     process_manager.get_futures(), timeout=10
                 ):  # On TimeoutError, catch it and simply fall back to while loop for regular exiting check
-                    root_context = future.root_context
+                    root_context = process_manager.get_context_for_future(future)
                     process_manager.remove_future(future)
                     metadata_manager.set_context(root_context)
                     root_context_path = metadata_manager.context.as_path(
@@ -268,8 +262,9 @@ def main(arguments: list[str]) -> None:
                             True  # Consider the status of a root archive cancelled if any tasks for its members are cancelled
                         )
                     else:
+                        result: ContextualFutureResult
                         for result in future.result():
-                            context = dataclasses.replace(future.context)  # Make a copy
+                            context = dataclasses.replace(root_context)  # Make a copy
                             match result.status:
                                 case ResultStatus.DONE:
                                     pass  # Nothing to do
@@ -285,7 +280,6 @@ def main(arguments: list[str]) -> None:
                                         extract_archive_file_future = (
                                             process_manager.submit_extract_task(
                                                 context,
-                                                root_context,
                                                 extract_archive_file,
                                                 context,
                                                 thread_sevenzip,
@@ -357,8 +351,8 @@ def main(arguments: list[str]) -> None:
 
 def download_file(
     context: Context, rclone: RClone, sevenzip: SevenZip
-) -> list[ProcessResult]:
-    result = ProcessResult(ResultStatus.DONE, context, context, None)
+) -> list[ContextualFutureResult]:
+    result = ContextualFutureResult(ResultStatus.DONE, context, None)
     try:
         rclone.set_context(context)
         rclone.download()
@@ -378,15 +372,15 @@ def download_file(
 
 def extract_archive_file(
     context: Context, sevenzip: SevenZip, root_context: Context | None = None
-) -> list[ProcessResult]:
+) -> list[ContextualFutureResult]:
     if root_context is None:
         root_context = context.copy()
     try:
         sevenzip.set_context(context)
         destination_root_dir = sevenzip.get_destination_root_dir()
         archive_extract_dir = sevenzip.get_extract_root_dir()
-        archive_result = ProcessResult(
-            ResultStatus.DONE, context, root_context, None
+        archive_result = ContextualFutureResult(
+            ResultStatus.DONE, context, None
         )  # Always included in return value as the last element
         sevenzip.extract()
     except Exception as e:
@@ -407,8 +401,8 @@ def extract_archive_file(
             )  # Get the path relative from the source directory
             try:
                 sevenzip.set_context_file_path(result_file_path)
-                extracted_file_result = ProcessResult(
-                    ResultStatus.DONE, sevenzip.get_context(), root_context, None
+                extracted_file_result = ContextualFutureResult(
+                    ResultStatus.DONE, sevenzip.get_context(), None
                 )
                 if sevenzip.is_archive_file():
                     extracted_file_result.status = ResultStatus.EXTRACT_NEEDED

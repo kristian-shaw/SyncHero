@@ -228,7 +228,7 @@ class MetadataManager(Contextual):
             if context_metadata.parent_key == current_metadata_key:
                 results.append(Context.from_path(metadata_key))
         return results
-    
+
     def delete_archive_members_metadata(self, use_lock: bool = True) -> None:
         self.raise_exception_if_context_not_set()
         context = self.get_context()
@@ -236,7 +236,7 @@ class MetadataManager(Contextual):
             if self.is_archive():
                 for member_context in self.get_archive_member_contexts():
                     self.set_context(member_context)
-                    self.delete_archive_members_metadata(use_lock=False) # Recurse
+                    self.delete_archive_members_metadata(use_lock=False)  # Recurse
                     self.delete_metadata(use_lock=False)
             self.set_context(context)
 
